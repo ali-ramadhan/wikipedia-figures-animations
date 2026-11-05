@@ -119,104 +119,130 @@ function coordinates(p::Problem, grid, offset = (0, 0))
 end
 
 #####
-##### The five schemes (A&L, eqs. 5–19)
+##### Differences and averages (A&L, p. 182)
 #####
 
-# The periodic neighbors of i on a lattice of n points: the next one and the previous one.
-@inline neighbors(i, n) = ifelse(i == n, 1, i + 1), ifelse(i == 1, n, i - 1)
+# Arakawa & Lamb write their schemes with a difference and an average of neighboring values,
+#
+#     (δx q)[i, j] = q[i + ½, j] - q[i - ½, j],    (q̄ˣ)[i, j] = (q[i + ½, j] + q[i - ½, j]) / 2,
+#
+# and likewise δy and q̄ʸ, with q̄ˣʸ the average in x followed by the average in y. Each gives its value halfway between
+# the two points it uses. Here each operator takes an array, or the result of another operator, and returns a field
+# whose values are computed when it is indexed. A ₊ operator indexed at [i, j] gives its value half an interval after
+# the point [i, j] of its argument, and a ₋ operator half an interval before it. On grid C, for example, where u[i, j]
+# is at (i + ½, j), δx₊(h)[i, j] is δx h at the u point (i + ½, j), δx₋(u)[i, j] is δx u at the height point (i, j),
+# and ȳ₋(x̄₊(v))[i, j] is v̄ˣʸ at the u point.
+
+"""
+    LazyField(f)
+
+A field on the periodic lattice whose value at [i, j] is f(i, j), computed when it is needed.
+"""
+struct LazyField{F}
+    f::F
+end
+
+@inline Base.getindex(q::LazyField, i, j) = q.f(i, j)
+
+# The value of an array or a lazy field at [i, j]. Indices one past either end of the lattice wrap around to the other
+# end.
+@inline at(q::LazyField, i, j) = q[i, j]
+@inline at(q::AbstractMatrix, i, j) = @inbounds q[wrap(i, size(q, 1)), wrap(j, size(q, 2))]
+@inline wrap(i, n) = ifelse(i > n, i - n, ifelse(i < 1, i + n, i))
+
+δx₊(q) = LazyField(@inline (i, j) -> at(q, i + 1, j) - at(q, i, j))
+δx₋(q) = LazyField(@inline (i, j) -> at(q, i, j) - at(q, i - 1, j))
+δy₊(q) = LazyField(@inline (i, j) -> at(q, i, j + 1) - at(q, i, j))
+δy₋(q) = LazyField(@inline (i, j) -> at(q, i, j) - at(q, i, j - 1))
+
+x̄₊(q) = LazyField(@inline (i, j) -> (at(q, i, j) + at(q, i + 1, j)) / 2)
+x̄₋(q) = LazyField(@inline (i, j) -> (at(q, i - 1, j) + at(q, i, j)) / 2)
+ȳ₊(q) = LazyField(@inline (i, j) -> (at(q, i, j) + at(q, i, j + 1)) / 2)
+ȳ₋(q) = LazyField(@inline (i, j) -> (at(q, i, j - 1) + at(q, i, j)) / 2)
+
+#####
+##### The five schemes (A&L, eqs. 5–19)
+#####
 
 """
     tendencies!(du, dv, dh, u, v, h, p, grid)
 
-Evaluate the right-hand sides of the semi-discrete equations on `grid` into `du`, `dv` and `dh`. The height h[i, j] is
-at the point (i, j), and u and v are offset from it as in `velocity_offsets`.
+Evaluate the right-hand sides of the semi-discrete equations on `grid` into `du`, `dv` and `dh`, written with A&L's
+differences and averages. The height h[i, j] is at the point (i, j), and u and v are offset from it as in
+`velocity_offsets`.
 """
 function tendencies! end
 
-# Everything at the height points: centered differences over 2d.
+# Everything at the height points (i, j). The average of two neighboring differences is a difference over 2d.
 function tendencies!(du, dv, dh, u, v, h, p::Problem, grid::AGrid)
     f, g, H = p.f, gravity(p), p.H
-    n, Δ = lattice_size(p, grid), spacing(p, grid)
+    n, d = lattice_size(p, grid), spacing(p, grid)
 
     @inbounds for j in 1:n, i in 1:n
-        (i₊, i₋), (j₊, j₋) = neighbors(i, n), neighbors(j, n)
-        du[i, j] = f * v[i, j] - g * (h[i₊, j] - h[i₋, j]) / 2Δ
-        dv[i, j] = -f * u[i, j] - g * (h[i, j₊] - h[i, j₋]) / 2Δ
-        dh[i, j] = -H * ((u[i₊, j] - u[i₋, j]) + (v[i, j₊] - v[i, j₋])) / 2Δ
+        du[i, j] = f * v[i, j] - g * x̄₋(δx₊(h))[i, j] / d
+        dv[i, j] = -f * u[i, j] - g * ȳ₋(δy₊(h))[i, j] / d
+        dh[i, j] = -H * (x̄₋(δx₊(u))[i, j] + ȳ₋(δy₊(v))[i, j]) / d
     end
 
     return nothing
 end
 
-# u and v together at the cell corners (i + ½, j + ½): differences across the cell, averaged along it.
+# u and v together at the cell corners (i + ½, j + ½).
 function tendencies!(du, dv, dh, u, v, h, p::Problem, grid::BGrid)
     f, g, H = p.f, gravity(p), p.H
-    n, Δ = lattice_size(p, grid), spacing(p, grid)
+    n, d = lattice_size(p, grid), spacing(p, grid)
 
     @inbounds for j in 1:n, i in 1:n
-        (i₊, i₋), (j₊, j₋) = neighbors(i, n), neighbors(j, n)
-        du[i, j] = f * v[i, j] - g * ((h[i₊, j] + h[i₊, j₊]) - (h[i, j] + h[i, j₊])) / 2Δ
-        dv[i, j] = -f * u[i, j] - g * ((h[i, j₊] + h[i₊, j₊]) - (h[i, j] + h[i₊, j])) / 2Δ
-        dh[i, j] = -H * (((u[i, j] + u[i, j₋]) - (u[i₋, j] + u[i₋, j₋])) +
-                         ((v[i, j] + v[i₋, j]) - (v[i, j₋] + v[i₋, j₋]))) / 2Δ
+        du[i, j] = f * v[i, j] - g * ȳ₊(δx₊(h))[i, j] / d
+        dv[i, j] = -f * u[i, j] - g * x̄₊(δy₊(h))[i, j] / d
+        dh[i, j] = -H * (ȳ₋(δx₋(u))[i, j] + x̄₋(δy₋(v))[i, j]) / d
     end
 
     return nothing
 end
 
-# u at (i + ½, j) and v at (i, j + ½): the pressure gradient and the divergence are differences over d, but the Coriolis
-# force averages each velocity component over the four nearest points.
+# u at (i + ½, j) and v at (i, j + ½), on the faces of the cells around the height points.
 function tendencies!(du, dv, dh, u, v, h, p::Problem, grid::CGrid)
     f, g, H = p.f, gravity(p), p.H
-    n, Δ = lattice_size(p, grid), spacing(p, grid)
+    n, d = lattice_size(p, grid), spacing(p, grid)
 
     @inbounds for j in 1:n, i in 1:n
-        (i₊, i₋), (j₊, j₋) = neighbors(i, n), neighbors(j, n)
-        v̄ = (v[i, j] + v[i, j₋] + v[i₊, j] + v[i₊, j₋]) / 4
-        ū = (u[i, j] + u[i₋, j] + u[i, j₊] + u[i₋, j₊]) / 4
-        du[i, j] = f * v̄ - g * (h[i₊, j] - h[i, j]) / Δ
-        dv[i, j] = -f * ū - g * (h[i, j₊] - h[i, j]) / Δ
-        dh[i, j] = -H * ((u[i, j] - u[i₋, j]) + (v[i, j] - v[i, j₋])) / Δ
+        du[i, j] = f * ȳ₋(x̄₊(v))[i, j] - g * δx₊(h)[i, j] / d
+        dv[i, j] = -f * ȳ₊(x̄₋(u))[i, j] - g * δy₊(h)[i, j] / d
+        dh[i, j] = -H * (δx₋(u)[i, j] + δy₋(v)[i, j]) / d
     end
 
     return nothing
 end
 
-# u at (i, j + ½) and v at (i + ½, j): grid C with u and v swapped. The Coriolis force is averaged as on grid C, and the
-# pressure gradient and the divergence are differences over d of four-point averages.
+# u at (i, j + ½) and v at (i + ½, j): grid C with u and v swapped.
 function tendencies!(du, dv, dh, u, v, h, p::Problem, grid::DGrid)
     f, g, H = p.f, gravity(p), p.H
-    n, Δ = lattice_size(p, grid), spacing(p, grid)
+    n, d = lattice_size(p, grid), spacing(p, grid)
 
     @inbounds for j in 1:n, i in 1:n
-        (i₊, i₋), (j₊, j₋) = neighbors(i, n), neighbors(j, n)
-        v̄ = (v[i, j] + v[i₋, j] + v[i, j₊] + v[i₋, j₊]) / 4
-        ū = (u[i, j] + u[i, j₋] + u[i₊, j] + u[i₊, j₋]) / 4
-        ∂h∂x = ((h[i₊, j] - h[i₋, j]) + (h[i₊, j₊] - h[i₋, j₊])) / 4Δ
-        ∂h∂y = ((h[i, j₊] - h[i, j₋]) + (h[i₊, j₊] - h[i₊, j₋])) / 4Δ
-        du[i, j] = f * v̄ - g * ∂h∂x
-        dv[i, j] = -f * ū - g * ∂h∂y
-        dh[i, j] = -H * (((u[i₊, j] - u[i₋, j]) + (u[i₊, j₋] - u[i₋, j₋])) +
-                         ((v[i, j₊] - v[i, j₋]) + (v[i₋, j₊] - v[i₋, j₋]))) / 4Δ
+        du[i, j] = f * ȳ₊(x̄₋(v))[i, j] - g * ȳ₊(x̄₋(δx₊(h)))[i, j] / d
+        dv[i, j] = -f * ȳ₋(x̄₊(u))[i, j] - g * ȳ₋(x̄₊(δy₊(h)))[i, j] / d
+        dh[i, j] = -H * (ȳ₋(x̄₋(δx₊(u)))[i, j] + ȳ₋(x̄₋(δy₊(v)))[i, j]) / d
     end
 
     return nothing
 end
 
-# A checkerboard: heights where i + j is odd and velocities where it is even, so every neighbor of a height point is a
-# velocity point and vice versa. Grid A's scheme on this lattice, whose differences span d* = 2s.
+# A checkerboard on the lattice of spacing s: heights where i + j is odd and velocities where it is even, so every
+# neighbor of a height point is a velocity point and vice versa. It is grid A's scheme on this lattice, in which
+# x̄₋(δx₊(h))[i, j] / s = (h[i + 1, j] - h[i - 1, j]) / 2s is A&L's δx h / d*, a difference over d* = 2s.
 function tendencies!(du, dv, dh, u, v, h, p::Problem, grid::EGrid)
     f, g, H = p.f, gravity(p), p.H
-    n, Δ = lattice_size(p, grid), spacing(p, grid)
+    n, s = lattice_size(p, grid), spacing(p, grid)
 
     @inbounds for j in 1:n, i in 1:n
-        (i₊, i₋), (j₊, j₋) = neighbors(i, n), neighbors(j, n)
         if is_height_point(grid, i, j)
             du[i, j] = dv[i, j] = 0.0
-            dh[i, j] = -H * ((u[i₊, j] - u[i₋, j]) + (v[i, j₊] - v[i, j₋])) / 2Δ
+            dh[i, j] = -H * (x̄₋(δx₊(u))[i, j] + ȳ₋(δy₊(v))[i, j]) / s
         else
-            du[i, j] = f * v[i, j] - g * (h[i₊, j] - h[i₋, j]) / 2Δ
-            dv[i, j] = -f * u[i, j] - g * (h[i, j₊] - h[i, j₋]) / 2Δ
+            du[i, j] = f * v[i, j] - g * x̄₋(δx₊(h))[i, j] / s
+            dv[i, j] = -f * u[i, j] - g * ȳ₋(δy₊(h))[i, j] / s
             dh[i, j] = 0.0
         end
     end

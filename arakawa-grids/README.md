@@ -4,10 +4,11 @@ Figures and animations for the Wikipedia article [Arakawa grids](https://en.wiki
 Oceananigans.jl uses only the C grid, so the five grids are coded here directly, in plain Julia on the CPU, with the
 same time stepping for all of them.
 
-- `arakawa_grids.jl`: the five grids, as types that the schemes dispatch on, the Runge–Kutta time stepper, and the
-  exact solutions used to check them.
+- `arakawa_grids.jl`: the five grids, as types that the schemes dispatch on; Arakawa & Lamb's difference and averaging
+  operators, in which the schemes are written; the Runge–Kutta time stepper; and the exact solutions used to check
+  them.
 - `verify.jl`: checks every scheme against its dispersion relation and against the exact solution of its
-  semi-discrete equations (24 checks; about 15 s).
+  semi-discrete equations (24 checks; about 20 s).
 - `simulate.jl`: the two geostrophic-adjustment simulations, on all five grids (about 1 min).
 - `animate.jl`: the two animations and a still from each, at 2360 × 2200 (about 6 min).
 - `dispersion.jl`: the dispersion relations in one dimension, and in two for λ = 2d and λ = d/2. Contour labels are
@@ -42,8 +43,9 @@ the system Arakawa & Lamb (1977, pp. 180–183) use to compare the grids. Their 
 frequency $\nu^2 = f^2 + gH(k^2 + l^2)$, and the radius of deformation is $\lambda = \sqrt{gH}/f$.
 
 Each grid uses the simplest second-order scheme for its arrangement of $u$, $v$ and $h$: Arakawa & Lamb's eqs. (5)–(19),
-with $\delta_x$ a difference over one grid interval and an overbar an average of neighbors. On grid D the Coriolis
-terms are $-f\bar{v}^{xy}$ and $+f\bar{u}^{xy}$; eqs. (14) and (15) print the two averages the wrong way round (see
+with $\delta_x$ a difference over one grid interval and an overbar an average of neighbors. `arakawa_grids.jl` writes
+each scheme with these operators, so its code reads like the equations. On grid D the Coriolis terms are
+$-f\bar{v}^{xy}$ and $+f\bar{u}^{xy}$; eqs. (14) and (15) print the two averages the wrong way round (see
 `checks/verify_dispersion.py` in the Wikipedia project). Grids A–D have $N \times N$ height points with spacing $d$.
 Grid E puts heights and velocities on alternate points of an $M \times M$ lattice, so its differences span
 $d^* = 2L/M$; with $N = 198$ and $M = 280$, $d^* = 1.41429\,d$, within 0.005% of Arakawa & Lamb's $\sqrt{2}\,d$, and all
